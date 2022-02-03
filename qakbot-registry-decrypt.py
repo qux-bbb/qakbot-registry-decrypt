@@ -1,17 +1,17 @@
-from optparse import OptionParser
+# coding:utf8
+
+import sys
+import hexdump
+import winreg
+import win32api
+import binascii
+
 from Crypto.Cipher import ARC4
 from hashlib import sha1
-from struct import *
+from struct import pack
 
-import hexdump
-import socket
-import winreg
-import sys
-import wmi
-import os
-import re
 
-tbl4 =    [ 0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac,
+tbl4 = [ 0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac,
     0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
     0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c,
     0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c]
@@ -49,59 +49,68 @@ def get_all_reg_values(reg_key):
 
 def get_password():
     """gets the computer name, C: drive volume serial number, and account name"""
-    try:
-        computer_name = socket.gethostname();
-    except:
-        computer_name = os.environ['COMPUTERNAME']
-    try:
-        for volume in wmi.WMI().Win32_LogicalDisk():
-            if volume.Caption == 'C:':
-                volume_serial_number = str(int(volume.VolumeSerialNumber,16))
-                break
-        user_account_name = os.getlogin()
-    except:
-        return None
-    return widen_string(computer_name.upper() + volume_serial_number.upper() + user_account_name.upper())
+
+    computer_name = win32api.GetComputerName()
+    volume_serial_number = win32api.GetVolumeInformation('C:\\')[1] & 0xffffffff
+    user_account_name = win32api.GetUserName()
+
+    return widen_string(('{}{}{}'.format(computer_name,volume_serial_number,user_account_name)).upper())
 
 
-if __name__ == '__main__':
-    parser = OptionParser()
-    parser.add_option('-r','--regpath', 
-        type='string', 
-        dest='registry_path',
-        help="registry path where Qakbot's encrypted data is stored. (e.g. 'HKEY_CURRENT_USER\SOFTWARE\Microsoft\Efwramsn')")
-    parser.add_option('-p', '--password', 
-        type='string', 
-        dest='password',
-        help="password (optional)")
-    (options, args) = parser.parse_args()
+def _int32(x):
+    return int(0xFFFFFFFF & x)
 
-    if options.password:
-        password = options.password
-    else:
-        password = get_password()
-        if not password:
-            print('Error collecting password string')
-            sys.exit(0)
+class MT19937:
+    def __init__(self, seed):
+        self.mt = [0] * 624
+        self.mt[0] = seed
+        self.mti = 0
+        for i in range(1, 624):
+            self.mt[i] = _int32(1812433253 * (self.mt[i - 1] ^ self.mt[i - 1] >> 30) + i)
 
-    if options.registry_path:
-        root_match = re.match(r'^([Hh][a-zA-Z_]*?)\\(.*?)$',options.registry_path)
-        if root_match:
-            root = root_match.group(1)
-            try:
-                if root.upper() == 'HKLM' or root.upper() == 'HKEY_LOCAL_MACHINE':
-                    regkey = winreg.OpenKeyEx(winreg.HKEY_LOCAL_MACHINE, root_match.group(2))
-                if root.upper() == 'HKCU' or root.upper() == 'HKEY_CURRENT_USER':
-                    regkey = winreg.OpenKeyEx(winreg.HKEY_CURRENT_USER, root_match.group(2))
-            except WindowsError as e:
-                print('Failed to open registry key')
-                sys.exit(0)
-        else:
-            print('Registry key path format not allowed.')
-            sys.exit(0)
-    else:
-        print('Registry key is required.')
-        sys.exit(0)
+    def extract_number(self):
+        if self.mti == 0:
+            self.twist()
+        y = self.mt[self.mti]
+        y = y ^ y >> 11
+        y = y ^ y << 7 & 2636928640
+        y = y ^ y << 15 & 4022730752
+        y = y ^ y >> 18
+        self.mti = (self.mti + 1) % 624
+        return _int32(y)
+
+    def twist(self):
+        for i in range(0, 624):
+            y = _int32((self.mt[i] & 0x80000000) + (self.mt[(i + 1) % 624] & 0x7fffffff))
+            self.mt[i] = (y >> 1) ^ self.mt[(i + 397) % 624]
+
+            if y % 2 != 0:
+                self.mt[i] = self.mt[i] ^ 0x9908b0df
+
+def get_limited_random_num(a_MT19937, a, b):
+    v3 = a_MT19937.extract_number() & 0xFFFFFFF
+    return a - int((b - a + 1) * (v3 * -0.000000003725290298461914))
+
+
+def main():
+    password = get_password()
+
+    seed = binascii.crc32(password)
+    the_MT19937 = MT19937(seed)
+    the_len = get_limited_random_num(the_MT19937, 7, 14)
+
+    basic_str = "aabcdeefghiijklmnoopqrstuuvwxyyz"
+    basic_str_len = len(basic_str)
+    random_key = ''
+    for i in range(the_len):
+        if i > 32:
+            break
+        tmp_index = get_limited_random_num(the_MT19937, 0, basic_str_len-1)
+        random_key += basic_str[tmp_index]
+    random_key = random_key.capitalize()
+
+    subkey = 'Software\\Microsoft\\' + random_key
+    regkey = winreg.OpenKeyEx(winreg.HKEY_CURRENT_USER, subkey)
 
     print('Using password (in UTF-16): "{}"'.format(password.decode('utf-16')))
     password_hash = mit_crc32_shift4(password,0)            # calculate password's crc32_shift4 hash 
@@ -120,6 +129,11 @@ if __name__ == '__main__':
         derived_key = sha1(key).digest()                      # hash salted key with SHA1 
         cipher = ARC4.new(derived_key)                        # use SHA1 hash as RC4 key
         msg = cipher.decrypt(value)                           # decrypt registry value data 
-        print("Registry key path: {}\nRC4 key: {}\nDecrypted value:\n{}\n".format(options.registry_path+"\\"+name, 
-                                                                        ' '.join(format(x, '02x') for x in derived_key), 
-                                                                        hexdump.hexdump(msg, result="return")))
+        print("Registry key path: {}\nRC4 key: {}\nDecrypted value:\n{}\n".format(
+            "HKEY_CURRENT_USER\\"+subkey+"\\"+name,
+            ' '.join(format(x, '02x') for x in derived_key),
+            hexdump.hexdump(msg, result="return")))
+
+
+if __name__ == '__main__':
+    main()
