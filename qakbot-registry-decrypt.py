@@ -59,16 +59,16 @@ def get_password():
     return widen_string(('{}{}{}'.format(computer_name,volume_serial_number,user_account_name)).upper())
 
 
-def _int32(x):
-    return int(0xFFFFFFFF & x)
-
 class MT19937:
     def __init__(self, seed):
         self.mt = [0] * 624
         self.mt[0] = seed
         self.mti = 0
         for i in range(1, 624):
-            self.mt[i] = _int32(1812433253 * (self.mt[i - 1] ^ self.mt[i - 1] >> 30) + i)
+            self.mt[i] = MT19937._int32(1812433253 * (self.mt[i - 1] ^ self.mt[i - 1] >> 30) + i)
+
+    def _int32(x):
+        return int(0xFFFFFFFF & x)
 
     def extract_number(self):
         if self.mti == 0:
@@ -79,11 +79,11 @@ class MT19937:
         y = y ^ y << 15 & 4022730752
         y = y ^ y >> 18
         self.mti = (self.mti + 1) % 624
-        return _int32(y)
+        return MT19937._int32(y)
 
     def twist(self):
         for i in range(0, 624):
-            y = _int32((self.mt[i] & 0x80000000) + (self.mt[(i + 1) % 624] & 0x7fffffff))
+            y = MT19937._int32((self.mt[i] & 0x80000000) + (self.mt[(i + 1) % 624] & 0x7fffffff))
             self.mt[i] = (y >> 1) ^ self.mt[(i + 397) % 624]
 
             if y % 2 != 0:
