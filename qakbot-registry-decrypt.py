@@ -107,7 +107,7 @@ def main():
     (options, args) = parser.parse_args()
 
     if options.password:
-        password = options.password
+        password = widen_string(options.password.upper())
     else:
         password = get_password()
         if not password:
